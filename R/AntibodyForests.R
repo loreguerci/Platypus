@@ -24,7 +24,7 @@
 #' 'mst' will create undirected trees using the minimum spanning tree algorithm from igraph (without specific tie solving mechanisms).
 #' 'global' is a custom option to easily create whole-repertoire/multi-repertoire similarity networks: it defaults to the 'prune.distance' option, while also changing some other parameters to ensure consistency (directed is set to F, include.germline is set to F, network.level is set to 'global')
 #' @param directed boolean, whether networks obtained using network.algorithm='tree' should be directed (from the germline to the leaf nodes) or not. T - directed; F - undirected trees.
-#' @param distance.calculation string or function, specifying the method for calculating string distances between the sequences. Must be compatible with the method parameter of the stringdist::stringdistmatrix() function. Will default to 'lv' for Levenshtein distances. Else, if a function of the form distance(seq1, seq2) must be specified, which should output a float = custom distance metric between the selected sequences.
+#' @param distance.calculation string, specifying the method for calculating string distances between the sequences. Must be compatible with the method parameter of the stringdist::stringdistmatrix() function. Will default to 'lv' for Levenshtein distances.
 #' @param resolve.ties vector of strings, denoting the manner in which ties should be resolved when assembling trees via network.algorithm='tree'. Ties are defined as edges with the same weights=string distances (as determined by the distance matrix for the fully connected network) between nodes already added in the tree and nodes to be added in the tree.
 #' There are multiple default and custom configurations for this parameter:
 #' 'first' will pick the first edge from a pool of edges of equal string distance (between the sequences) - these are ordered based on each node's expansion/cell count (therefore 'first' will try to add the most expanded node first);
@@ -124,7 +124,7 @@ AntibodyForests <- function(VDJ,
   if(missing(network.level)) network.level <- 'intraclonal'
   if(missing(forest.method)) forest.method <- 'multiple.germlines' #join all at germline(single.germline), multiple.germlines, multiple.germlines.joined
   if(missing(random.seed)) random.seed <- 1
-  if(missing(parallel)) parallel <- F
+  if(missing(parallel)) parallel <- T
   if(missing(as.igraph)) as.igraph <- T
 
 
@@ -243,31 +243,6 @@ AntibodyForests <- function(VDJ,
 
    }
   )
-
-  custom_distance_matrix <- function(unique.sequences, distance.metric){
-    #Remember to export %dopar% operator from the doParallel package
-    #requireNamespace('parallel') #Will remove later
-    #requireNamespace('doParallel')
-    #requireNamespace('bigstatsr')
-
-    m <- bigstatsr::FBM(length(unique.sequences), length(unique.sequences))
-    combs <- combn(1:length(unique.sequences), 2)
-    cores <- parallel::detectCores()
-    cl <- parallel::makeCluster(cores)
-
-    doParallel::registerDoParallel(cl)
-    out <- foreach::foreach(d = 1:ncol(combs), .combine = 'c') %dopar% {
-      dist <- distance.metric(unique.sequences[combs[1,d]], unique.sequences[combs[2,d]])
-      m[combs[1,d], combs[2,d]] <- dist
-      m[combs[2,d], combs[1,d]] <- dist
-      NULL
-    }
-    parallel::stopCluster(cl)
-
-    return(m[])
-  }
-
-
   get_sequence_combinations <- function(x, y, split.x, split.y, split.by=';', collapse.by=';'){
     if(split.x==T) x <- stringr::str_split(x, split.by ,simplify=T)[1,]
     if(split.y==T) y <- stringr::str_split(y, split.by ,simplify=T)[1,]
@@ -493,7 +468,7 @@ AntibodyForests <- function(VDJ,
 
 
       feature_list[[i]] <- feats
-      feature_counts[[i]] <- counts #unname(counts)
+      feature_counts[[i]] <- counts
     }
 
     network_df[[feature]] <- feature_list
@@ -603,12 +578,7 @@ AntibodyForests <- function(VDJ,
     network_df$most_expanded[nrow(network_df)] <- 'germline'
 
     #Add distance from germline before joining networks...more efficient downstream integration into AntibodyForests_metrics (otherwise would have to get unique germlines per clonotypes using the clonotype_ids...but this way it's easier)
-    if(!is.function(distance.calculation)){
-      network_df$distance_from_germline <- stringdist::stringdistmatrix(network_df$network_sequences, germline_seq, method=distance.calculation)
-    }else{
-      network_df$distance_from_germline <- lapply(network_df$network_sequences, function(x) distance.calculation(x, germline_seq))
-    }
-
+    network_df$distance_from_germline <- stringdist::stringdistmatrix(network_df$network_sequences, germline_seq)
   }
 
   #Add sequence ids/labels
@@ -621,13 +591,7 @@ AntibodyForests <- function(VDJ,
  calculate_adjacency_matrix_tree <- function(network_df){
 
    sequences <- network_df$network_sequences
-
-   if(!is.function(distance.calculation)){
-     distance_matrix <- stringdist::stringdistmatrix(sequences, sequences, method=distance.calculation)
-   }else{
-     distance_matrix <- custom_distance_matrix(sequences, distance.calculation)
-   }
-
+   distance_matrix <- stringdist::stringdistmatrix(sequences, sequences, method=distance.calculation)
    diag(distance_matrix) <- Inf
    final_adjacency_matrix <- matrix(0, nrow(distance_matrix), ncol(distance_matrix))
    diag(final_adjacency_matrix) <- Inf
@@ -914,13 +878,7 @@ AntibodyForests <- function(VDJ,
  calculate_adjacency_matrix_prune <- function(network_df){
 
     sequences <- network_df$network_sequences
-
-    if(!is.function(distance.calculation)){
-      distance_matrix <- stringdist::stringdistmatrix(sequences, sequences, method=distance.calculation)
-    }else{
-      distance_matrix <- custom_distance_matrix(sequences, distance.calculation)
-    }
-
+    distance_matrix <- stringdist::stringdistmatrix(sequences, sequences, method=distance.calculation)
     diag(distance_matrix) <- Inf
     final_adjacency_matrix <- distance_matrix
     adjacency_matrix_copy <- final_adjacency_matrix
@@ -1069,13 +1027,7 @@ AntibodyForests <- function(VDJ,
 
    phylogenetic_method <- unlist(stringr::str_split(network.algorithm, '\\.'))
    sequences <- network_df$network_sequences
-
-   if(!is.function(distance.calculation)){
-     distance_matrix <- stringdist::stringdistmatrix(sequences, sequences, method=distance.calculation)
-   }else{
-     distance_matrix <- custom_distance_matrix(sequences, distance.calculation)
-   }
-
+   distance_matrix <- stringdist::stringdistmatrix(sequences, sequences, method=distance.calculation)
    phylo_tree <- ape::nj(distance_matrix)
 
    #Roots at the germline node
@@ -1170,13 +1122,7 @@ AntibodyForests <- function(VDJ,
  create_mst_trees <- function(network_df){
 
    sequences <- network_df$network_sequences
-
-   if(!is.function(distance.calculation)){
-     distance_matrix <- stringdist::stringdistmatrix(sequences, sequences, method=distance.calculation)
-   }else{
-     distance_matrix <- custom_distance_matrix(sequences, distance.calculation)
-   }
-
+   distance_matrix <- stringdist::stringdistmatrix(sequences, sequences, method=distance.calculation) #biggest bottleneck currently (for v large graphs)
    g <- igraph::graph_from_adjacency_matrix(distance_matrix, mode='undirected', weighted=T, diag=F)
    g <- igraph::mst(g)
 
